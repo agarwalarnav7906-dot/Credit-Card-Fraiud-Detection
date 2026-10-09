@@ -1,0 +1,3 @@
+TransactionID,CardID,Amount,Merchant,Location,Latitude,Longitude,Timestamp,DeviceID,PrelimScore,FinalScore,OTPStatus,AuthStatus,FraudStatus,Decision,FailedAuthAttempts,Reasons
+1,1006,20000,amazon,DEHRADUN,30.3165,78.0322,2026-10-08 14:00:01,1234,0,0,NOT REQUIRED,NOT REQUIRED,NORMAL,ALLOWED,0,No risk factors
+2,1007,20000,flipkart,DEHRADUN,30.3165,78.0322,2026-10-08 16:56:41,12345,0,0,NOT REQUIRED,NOT REQUIRED,NORMAL,ALLOWED,0,No risk factors

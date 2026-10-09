@@ -23,6 +23,7 @@ bool inputTransaction(Transaction& t)
 
     cout << "Location: ";
     cin >> t.location;
+    t.location = toUpperCase(t.location);
 
     cout << "Device ID: ";
     cin >> t.deviceId;

@@ -75,8 +75,41 @@ int main()
 
     if (!searchCard(cardID, card))
     {
-        cout << "\nERROR: Card not found.\n";
-        return 0;
+        cout << "\nCard " << cardID << " not found.\n";
+        cout << "Do you want to add it as a new card? (y/n): ";
+
+        char choice;
+        cin >> choice;
+
+        if (choice != 'y' && choice != 'Y')
+        {
+            cout << "\nTransaction cancelled.\n";
+            return 0;
+        }
+
+        string holderName, accountType, status;
+
+        cout << "Enter Card Holder Name (no spaces, e.g. Rahul): ";
+        cin >> holderName;
+
+        cout << "Enter Account Type (Credit/Debit): ";
+        cin >> accountType;
+
+        cout << "Enter Status (Active/Blocked): ";
+        cin >> status;
+
+        if (!addCard(cardID, holderName, accountType, status, 0))
+        {
+            cout << "\nERROR: Could not add card.\n";
+            return 0;
+        }
+
+        // Load the freshly added card so the rest of the program can use it
+        if (!searchCard(cardID, card))
+        {
+            cout << "\nERROR: Card was added but could not be read back.\n";
+            return 0;
+        }
     }
 
 
@@ -136,6 +169,7 @@ int main()
 
     cout << "Enter Transaction Location: ";
     cin >> locationName;
+    locationName = toUpperCase(locationName);
 
 
     Location currentLocation;
