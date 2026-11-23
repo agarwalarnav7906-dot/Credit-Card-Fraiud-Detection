@@ -5,13 +5,25 @@
 
 using namespace std;
 
+// FIX (integration): localtime() returns a pointer to one shared static buffer,
+// so two HTTP worker threads formatting a timestamp at the same time could
+// read each other's result. Use the reentrant variant on each platform.
+static bool safeLocalTime(time_t value, tm& out)
+{
+#ifdef _WIN32
+    return localtime_s(&out, &value) == 0;
+#else
+    return localtime_r(&value, &out) != nullptr;
+#endif
+}
+
 string formatCurrent(const char* format)
 {
     time_t timeNow = time(nullptr);
 
-    tm* localTime = localtime(&timeNow);
+    tm localTime = {};
 
-    if (localTime == nullptr)
+    if (!safeLocalTime(timeNow, localTime))
     {
         return "";
     }
@@ -22,7 +34,7 @@ string formatCurrent(const char* format)
         buffer,
         sizeof(buffer),
         format,
-        localTime
+        &localTime
     );
 
     return string(buffer);
@@ -76,15 +88,15 @@ bool parseTimestamp(const string& text, long long& epochSeconds)
 string formatTimestamp(long long epochSeconds)
 {
     time_t value = static_cast<time_t>(epochSeconds);
-    tm* localTime = localtime(&value);
+    tm localTime = {};
 
-    if (localTime == nullptr)
+    if (!safeLocalTime(value, localTime))
     {
         return "";
     }
 
     char buffer[100];
-    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", localTime);
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d %H:%M:%S", &localTime);
 
     return string(buffer);
 }
