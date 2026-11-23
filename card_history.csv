@@ -1,0 +1,3 @@
+CardID,TotalTransactions,CompletedTransactions,BlockedTransactions,TotalCompletedAmount,AverageAmount,Merchants,Devices,LastLocation,LastLatitude,LastLongitude,LastTimestamp,OTPRequiredCount,FailedOTPAttempts,LastFinalScore,LastUpdated
+1006,1,1,0,20000,20000,AMAZON,1234,DEHRADUN,30.3165,78.0322,1791448201,0,0,0,2026-10-08 14:00:01
+1007,1,1,0,20000,20000,FLIPKART,12345,DEHRADUN,30.3165,78.0322,1791458801,0,0,0,2026-10-08 16:56:41
