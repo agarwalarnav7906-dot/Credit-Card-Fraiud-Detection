@@ -20,6 +20,7 @@ bool inputTransaction(Transaction& t)
 
     cout << "Merchant: ";
     cin >> t.merchant;
+    t.merchant = toUpperCase(t.merchant);
 
     cout << "Location: ";
     cin >> t.location;
