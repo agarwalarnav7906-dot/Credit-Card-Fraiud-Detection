@@ -3,6 +3,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <iomanip>
 
 #include "location_history.h"
 #include "atomic_file.h"
@@ -183,6 +184,7 @@ bool saveLocation(
 
     // Rewrite file
     ostringstream output;
+    output << setprecision(15);   // FIX: keep coordinates exact
 
     output << "CardID,Location,Latitude,Longitude,Timestamp\n";
 

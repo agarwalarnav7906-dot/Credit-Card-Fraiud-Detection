@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <ctime>
+#include <cctype>
 
 #include "hashmodule.h"
 #include "latlong.h"
@@ -10,54 +11,148 @@
 #include "transaction.h"
 #include "transaction_history.h"
 #include "card_history.h"
+#include "sortmodule.h"
+#include "dequemodule.h"
+#include "locationgraph.h"
+#include "transaction_service.h"
 #include <vector>
 
 using namespace std;
 
 
-// Queue functions
-struct QueueTransaction
+// ==========================================================
+// INPUT HELPERS + ADD NEW CARD
+// ==========================================================
+
+static int readInt(const string& prompt);   // defined further below
+
+// Reads one whole line (spaces allowed), skipping any leftover newline from
+// an earlier "cin >>". Commas are removed so they can't corrupt cards.csv.
+// Returns "" only if input has been closed.
+static string readText(const string& prompt)
 {
-    int id;
-    double amount;
-    int score;
-};
+    while (true)
+    {
+        cout << prompt;
 
-void insertRear(QueueTransaction t);
-void displayQueue();
+        string s;
+        if (!getline(cin >> ws, s)) return "";
 
+        for (char& c : s)
+            if (c == ',' || c == '|' || c == '\r') c = ' ';
 
-int main()
+        size_t b = s.find_first_not_of(' ');
+        size_t e = s.find_last_not_of(' ');
+        if (b == string::npos) { cout << "Cannot be empty.\n"; continue; }
+
+        return s.substr(b, e - b + 1);
+    }
+}
+
+// Accepts "y", "yes", "n", "no" in any case.
+static bool readYesNo(const string& prompt)
 {
-    // ==========================================
-    // LOAD CARD DATABASE
-    // ==========================================
+    while (true)
+    {
+        string s = readText(prompt);
+        if (s.empty()) return false;
 
-    loadCards();
+        char c = (char)tolower((unsigned char)s[0]);
+        if (c == 'y') return true;
+        if (c == 'n') return false;
+
+        cout << "Please answer y or n.\n";
+    }
+}
+
+// Asks until the user picks optionA or optionB (full word or first letter,
+// any case). Returns the canonical spelling, or "" if input closed.
+static string readOneOf(const string& prompt, const string& a, const string& b)
+{
+    while (true)
+    {
+        string s = readText(prompt);
+        if (s.empty()) return "";
+
+        for (char& c : s) c = (char)tolower((unsigned char)c);
+
+        string la = a, lb = b;
+        for (char& c : la) c = (char)tolower((unsigned char)c);
+        for (char& c : lb) c = (char)tolower((unsigned char)c);
+
+        if (s == la || s == string(1, la[0])) return a;
+        if (s == lb || s == string(1, lb[0])) return b;
+
+        cout << "Please enter " << a << " or " << b << ".\n";
+    }
+}
+
+// Collects the details for a new card and saves it to cards.csv.
+static bool addCardInteractive(int cardID)
+{
+    if (cardID <= 0)
+    {
+        cout << "\nERROR: Card ID must be a positive number.\n";
+        return false;
+    }
+
+    Card existing;
+    if (searchCard(cardID, existing))
+    {
+        cout << "\nERROR: Card " << cardID << " already exists.\n";
+        return false;
+    }
+
+    string holderName = readText("Enter Card Holder Name: ");
+    if (holderName.empty()) return false;
+
+    string accountType = readOneOf("Enter Account Type (Credit/Debit): ",
+                                   "Credit", "Debit");
+    if (accountType.empty()) return false;
+
+    string status = readOneOf("Enter Status (Active/Blocked): ",
+                              "Active", "Blocked");
+    if (status.empty()) return false;
+
+    if (!addCard(cardID, holderName, accountType, status, 0))
+    {
+        cout << "\nERROR: Could not add card.\n";
+        return false;
+    }
+
+    return true;
+}
 
 
-    cout << "=========================================\n";
-    cout << "        CREDIT CARD FRAUD SYSTEM\n";
-    cout << "=========================================\n";
+// ==========================================================
+// PROCESS ONE NEW TRANSACTION (original fraud-detection flow)
+// ==========================================================
 
-
+static void processNewTransaction(TransactionDeque& reviewQueue,
+                                  const LocationGraph& graph)
+{
     // ==========================================
     // TRANSACTION ID
     // ==========================================
-
-    int transactionID;
 
     // Persistent history (transactions.csv)
     vector<Transaction> history;
     loadTransactions(history);
 
-    cout << "\nEnter Transaction ID: ";
-    cin >> transactionID;
+    // FIX: was "cin >> transactionID" with no check, so typing letters left
+    // the ID at 0 (and the stream failed), and 0 / negative IDs were accepted.
+    int transactionID = readInt("\nEnter Transaction ID: ");
+
+    if (transactionID <= 0)
+    {
+        cout << "\nERROR: Transaction ID must be a positive number.\n";
+        return;
+    }
 
     if (transactionIdExists(history, transactionID))
     {
         cout << "\nERROR: Transaction ID already exists in transactions.csv.\n";
-        return 0;
+        return;
     }
 
 
@@ -65,10 +160,7 @@ int main()
     // CARD
     // ==========================================
 
-    int cardID;
-
-    cout << "Enter Card ID: ";
-    cin >> cardID;
+    int cardID = readInt("Enter Card ID: ");
 
 
     Card card;
@@ -76,39 +168,24 @@ int main()
     if (!searchCard(cardID, card))
     {
         cout << "\nCard " << cardID << " not found.\n";
-        cout << "Do you want to add it as a new card? (y/n): ";
 
-        char choice;
-        cin >> choice;
-
-        if (choice != 'y' && choice != 'Y')
+        if (!readYesNo("Do you want to add it as a new card? (y/n): "))
         {
             cout << "\nTransaction cancelled.\n";
-            return 0;
+            return;
         }
 
-        string holderName, accountType, status;
-
-        cout << "Enter Card Holder Name (no spaces, e.g. Rahul): ";
-        cin >> holderName;
-
-        cout << "Enter Account Type (Credit/Debit): ";
-        cin >> accountType;
-
-        cout << "Enter Status (Active/Blocked): ";
-        cin >> status;
-
-        if (!addCard(cardID, holderName, accountType, status, 0))
+        if (!addCardInteractive(cardID))
         {
-            cout << "\nERROR: Could not add card.\n";
-            return 0;
+            cout << "\nTransaction cancelled.\n";
+            return;
         }
 
         // Load the freshly added card so the rest of the program can use it
         if (!searchCard(cardID, card))
         {
             cout << "\nERROR: Card was added but could not be read back.\n";
-            return 0;
+            return;
         }
     }
 
@@ -147,7 +224,7 @@ int main()
     if (cin.fail() || amount <= 0)
     {
         cout << "\nERROR: Amount must be a positive number.\n";
-        return 0;
+        return;
     }
 
 
@@ -159,6 +236,7 @@ int main()
 
     cout << "Enter Merchant: ";
     cin >> merchant;
+    merchant = toUpperCase(merchant);
 
 
     // ==========================================
@@ -179,7 +257,7 @@ int main()
         cout << "\nERROR: Location not found.\n";
         cout << "Add the location to locations.csv first.\n";
 
-        return 0;
+        return;
     }
 
 
@@ -198,68 +276,54 @@ int main()
     // ==========================================
 
     string currentTime = getCurrentTime();
-    string currentTimestamp = getCurrentTimestamp();
 
     cout << "\nCurrent Time: "
          << currentTime << endl;
 
 
     // ==========================================
-    // CURRENT TIMESTAMP (epoch derived from the same string we store)
+    // STEP 1: BEGIN TRANSACTION
+    // (card history -> location -> preliminary fraud analysis)
     // ==========================================
 
-    long long currentTimestampValue = 0;
+    TransactionRequest request;
 
-    if (!parseTimestamp(currentTimestamp, currentTimestampValue))
-    {
-        currentTimestampValue = static_cast<long long>(time(nullptr));
-    }
+    request.id = transactionID;
+    request.cardNo = cardID;
+    request.amount = amount;
+    request.merchant = merchant;
+    request.location = currentLocation;
+    request.deviceId = deviceId;
+
+    PendingTransaction pending =
+        beginTransaction(request, card, history, graph);
+
+    const Transaction& txn = pending.txn;
+    const FraudAnalysis& prelim = pending.prelim;
 
 
     // ==========================================
-    // READ CARD HISTORY FROM card_history.csv
-    // (rebuilt from transactions.csv if the card has no row yet)
+    // LOCATION ANALYSIS
     // ==========================================
 
-    CardHistory cardHistory = getCardHistory(cardID, history);
-
-    // One-time migration: cards that only exist in the old
-    // location_history.csv keep their last known location.
-    if (!cardHistory.hasLastLocation)
+    if (pending.hasPreviousLocation)
     {
-        PreviousLocation legacy;
-
-        if (getPreviousLocation(cardID, legacy))
-        {
-            cardHistory.hasLastLocation = true;
-            cardHistory.lastLocation = legacy.location;
-            cardHistory.lastLatitude = legacy.latitude;
-            cardHistory.lastLongitude = legacy.longitude;
-            cardHistory.lastTimestamp = legacy.timestamp;
-        }
-    }
-
-    double distance = 0.0;
-
-    if (cardHistory.hasLastLocation)
-    {
-        distance = calculateDistance(
-            cardHistory.lastLatitude,
-            cardHistory.lastLongitude,
-            currentLocation.latitude,
-            currentLocation.longitude
-        );
-
         cout << "\n========== LOCATION ANALYSIS ==========\n";
 
         cout << "Previous Location : "
-             << cardHistory.lastLocation << endl;
+             << pending.previousLocation << endl;
 
         cout << "Current Location  : "
              << currentLocation.name << endl;
 
         cout << "Distance          : "
-             << distance << " km" << endl;
+             << txn.distanceFromPrevious << " km" << endl;
+
+        if (pending.route.found && pending.route.path.size() > 2)
+        {
+            cout << "Travel network    : ";
+            graph.displayRoute(pending.route);
+        }
     }
     else
     {
@@ -269,36 +333,8 @@ int main()
 
 
     // ==========================================
-    // CREATE TRANSACTION
+    // PRELIMINARY FRAUD ANALYSIS
     // ==========================================
-
-    Transaction txn;
-
-    txn.id = transactionID;
-    txn.cardNo = cardID;
-    txn.amount = amount;
-    txn.merchant = merchant;
-    txn.location = currentLocation.name;
-    txn.latitude = currentLocation.latitude;
-    txn.longitude = currentLocation.longitude;
-    txn.timestamp = currentTimestamp;
-    txn.deviceId = deviceId;
-    txn.distanceFromPrevious = distance;
-
-
-    // ==========================================
-    // STEP 1: PRELIMINARY FRAUD ANALYSIS
-    // (history -> average -> frequency -> travel -> device -> merchant)
-    // ==========================================
-
-    FraudAnalysis prelim =
-        calculateFraudScore(
-            txn,
-            history,
-            cardHistory,
-            0,
-            false
-        );
 
     printFraudAnalysis(prelim, txn);
 
@@ -306,191 +342,117 @@ int main()
     cout << "Status: " << prelim.status << endl;
     cout << "------------------------------------\n";
 
-    txn.prelimScore = prelim.score;
-
-    FraudAnalysis finalAnalysis = prelim;
-
 
     // ==========================================
     // STEP 2: OTP / STEP-UP AUTHENTICATION
     // ==========================================
 
-    if (otpRequiredFor(prelim.score))
-    {
-        txn.otpRequired = true;
-        txn.authenticationRequired = true;
-        txn.authenticationMethod = "OTP";
+    OtpOutcome otp;
 
+    if (pending.otpRequired)
+    {
         cout << "\n=========================================\n";
         cout << "OTP VERIFICATION REQUIRED\n";
         cout << "=========================================\n";
 
-        /*
-            Demo OTP: 123456
-            Can be replaced with real OTP generation later.
-        */
-
-        int failed = 0;
-        bool verified = false;
-
-        while (failed < MAX_OTP_ATTEMPTS && !verified)
+        while (otp.failedAttempts < MAX_OTP_ATTEMPTS && !otp.verified)
         {
-            string otp;
+            string code;
 
-            cout << "Enter OTP (attempt " << (failed + 1)
+            cout << "Enter OTP (attempt " << (otp.failedAttempts + 1)
                  << " of " << MAX_OTP_ATTEMPTS << "): ";
-            cin >> otp;
+            cin >> code;
 
-            if (otp == "123456")
+            if (verifyOtp(code))
             {
-                verified = true;
+                otp.verified = true;
             }
             else
             {
-                failed++;
+                otp.failedAttempts++;
                 cout << "Incorrect OTP.\n";
             }
         }
 
-        txn.failedAuthAttempts = failed;
-        txn.otpVerified = verified;
-
-        if (verified)
+        if (otp.verified)
         {
-            txn.otpStatus = "VERIFIED";
-            txn.authStatus = "SUCCESSFUL";
-
             cout << "OTP VERIFIED SUCCESSFULLY.\n";
             cout << "Authentication successful. No OTP penalty.\n";
         }
         else
         {
-            txn.otpStatus = "FAILED";
-            txn.authStatus = "FAILED";
-
             cout << "Additional risk added: +"
                  << POINTS_WRONG_OTP << endl;
         }
+    }
 
-        // Recalculate from scratch with the authentication outcome
-        finalAnalysis =
-            calculateFraudScore(
-                txn,
-                history,
-                cardHistory,
-                failed,
-                !verified
-            );
 
-        if (failed >= REPEATED_FAIL_LIMIT)
+    // ==========================================
+    // STEP 3: COMPLETE TRANSACTION
+    // (final score -> decision -> save everything)
+    // ==========================================
+
+    TransactionOutcome result = completeTransaction(
+        pending, otp, reviewQueue,
+        [&](const Transaction& decided, const FraudAnalysis& finalAnalysis)
         {
-            cout << "Repeated authentication failure: +"
-                 << POINTS_REPEATED_AUTH_FAIL << endl;
-        }
+            if (decided.otpRequired)
+            {
+                if (otp.failedAttempts >= REPEATED_FAIL_LIMIT)
+                {
+                    cout << "Repeated authentication failure: +"
+                         << POINTS_REPEATED_AUTH_FAIL << endl;
+                }
 
-        cout << "\nPreliminary Fraud Score: " << prelim.score << endl;
-        cout << "Final Fraud Score      : " << finalAnalysis.score << endl;
-        cout << "Status: " << finalAnalysis.status << endl;
-    }
+                cout << "\nPreliminary Fraud Score: " << decided.prelimScore << endl;
+                cout << "Final Fraud Score      : " << finalAnalysis.score << endl;
+                cout << "Status: " << finalAnalysis.status << endl;
+            }
 
-
-    // ==========================================
-    // STEP 3: FINAL DECISION
-    // ==========================================
-
-    txn.finalScore = finalAnalysis.score;
-    txn.score = finalAnalysis.score;
-    txn.fraudStatus = finalAnalysis.status;
-
-    txn.blocked = shouldBlock(finalAnalysis.score);
-    txn.flagged = txn.blocked;
-    txn.decision = txn.blocked ? "BLOCKED" : "ALLOWED";
-
-    if (txn.blocked)
-    {
-        txn.flagTimestamp = currentTimestamp;
-        cout << "\nTransaction blocked.\n";
-    }
-
-    for (size_t i = 0; i < finalAnalysis.reasons.size(); i++)
-    {
-        if (i > 0) txn.reasons += "; ";
-        txn.reasons += finalAnalysis.reasons[i];
-    }
-
-    if (txn.reasons.empty())
-        txn.reasons = "No risk factors";
+            if (decided.blocked)
+            {
+                cout << "\nTransaction blocked.\n";
+            }
+        });
 
 
     // ==========================================
-    // UPDATE CARD POINTS
+    // SAVE CONFIRMATIONS
     // ==========================================
 
-    int oldPoints = card.points;
-
-    int newPoints =
-        oldPoints + txn.finalScore;
-
-
-    if (updatePoints(cardID, newPoints))
+    if (result.pointsSaved)
     {
         cout << "\nFraud points saved permanently.\n";
     }
 
-
-    // ==========================================
-    // SAVE CURRENT LOCATION
-    // (blocked transactions do not move the card's "last known" location)
-    // ==========================================
-
-    if (!txn.blocked)
-    {
-        saveLocation(
-            cardID,
-            currentLocation.name,
-            currentLocation.latitude,
-            currentLocation.longitude,
-            currentTimestampValue
-        );
-    }
-
-
-    // ==========================================
-    // PERSIST TRANSACTION (transactions.csv)
-    // ==========================================
-
-    if (appendTransaction(txn))
+    if (result.transactionSaved)
     {
         cout << "Transaction saved to " << TRANSACTION_FILE << ".\n";
     }
 
-
-    // ==========================================
-    // UPDATE card_history.csv (aggregated card data)
-    // ==========================================
-
-    if (updateCardHistory(cardHistory, txn))
+    if (result.cardHistorySaved)
     {
         cout << "Card history updated in " << CARD_HISTORY_FILE << ".\n";
     }
 
+    if (result.enqueued)
+    {
+        cout << "\nTransaction added to the fraud review deque ("
+             << (result.queuedAtFront ? "FRONT" : "REAR")
+             << ").\n";
 
-    // ==========================================
-    // QUEUE
-    // ==========================================
-
-    QueueTransaction queueTransaction;
-
-    queueTransaction.id = transactionID;
-    queueTransaction.amount = amount;
-    queueTransaction.score = txn.finalScore;
-
-    insertRear(queueTransaction);
-
+        if (result.evicted)
+        {
+            cout << "Deque was full: transaction " << result.dropped.id
+                 << " dropped from the rear.\n";
+        }
+    }
 
     // ==========================================
     // FINAL RESULT
     // ==========================================
+
+    const Transaction& done = result.txn;
 
     cout << "\n=========================================\n";
     cout << "           TRANSACTION RESULT\n";
@@ -501,31 +463,339 @@ int main()
     cout << "Merchant            : " << merchant << endl;
     cout << "Location            : " << locationName << endl;
     cout << "Device ID           : " << deviceId << endl;
-    cout << "Distance            : " << distance << " km" << endl;
-    cout << "Timestamp           : " << currentTimestamp << endl;
+    cout << "Distance            : " << done.distanceFromPrevious << " km" << endl;
+    cout << "Timestamp           : " << done.timestamp << endl;
 
-    cout << "Preliminary Score   : " << txn.prelimScore << endl;
-    cout << "Final Fraud Score   : " << txn.finalScore << endl;
-    cout << "Status              : " << txn.fraudStatus << endl;
+    cout << "Preliminary Score   : " << done.prelimScore << endl;
+    cout << "Final Fraud Score   : " << done.finalScore << endl;
+    cout << "Status              : " << done.fraudStatus << endl;
 
-    cout << "OTP Required        : " << (txn.otpRequired ? "YES" : "NO") << endl;
-    cout << "OTP Status          : " << txn.otpStatus << endl;
-    cout << "Authentication      : " << txn.authStatus << endl;
-    cout << "Decision            : " << txn.decision << endl;
-    cout << "Reasons             : " << txn.reasons << endl;
+    cout << "OTP Required        : " << (done.otpRequired ? "YES" : "NO") << endl;
+    cout << "OTP Status          : " << done.otpStatus << endl;
+    cout << "Authentication      : " << done.authStatus << endl;
+    cout << "Decision            : " << done.decision << endl;
+    cout << "Reasons             : " << done.reasons << endl;
 
-    cout << "Old Points          : " << oldPoints << endl;
-    cout << "New Points          : " << newPoints << endl;
+    cout << "Old Points          : " << result.oldPoints << endl;
+    cout << "New Points          : " << result.newPoints << endl;
 
     cout << "=========================================\n";
 
 
-    // ==========================================
-    // QUEUE
-    // ==========================================
-
-    displayQueue();
+    reviewQueue.display();
+}
 
 
-    return 0;
+// ==========================================================
+// SMALL INPUT HELPERS
+// ==========================================================
+
+static int readInt(const string& prompt)
+{
+    int value;
+
+    while (true)
+    {
+        cout << prompt;
+
+        if (cin >> value) return value;
+
+        if (cin.eof()) return 0;            // input closed -> behave like "Exit"
+
+        cin.clear();
+        cin.ignore(10000, '\n');
+        cout << "Please enter a number.\n";
+    }
+}
+
+
+// ==========================================================
+// SORTING MENU
+// ==========================================================
+
+static void sortMenu(bool topOnly)
+{
+    vector<Transaction> history;
+    loadTransactions(history);
+
+    if (history.empty())
+    {
+        cout << "\nNo transactions saved yet.\n";
+        return;
+    }
+
+    if (topOnly)
+    {
+        int n = readInt("How many of the riskiest transactions to show? ");
+        if (n < 1) n = 1;
+
+        displaySortedTable(
+            topRiskTransactions(history, static_cast<size_t>(n)),
+            "TOP RISKIEST TRANSACTIONS");
+        return;
+    }
+
+    cout << "\nSort by:\n  1. Time\n  2. Amount\n  3. Risk score\n";
+    int f = readInt("Choice: ");
+
+    cout << "Order:\n  1. Ascending\n  2. Descending\n";
+    int o = readInt("Choice: ");
+
+    if (f < 1 || f > 3 || o < 1 || o > 2)
+    {
+        cout << "Invalid choice.\n";
+        return;
+    }
+
+    const char* names[] = {"", "TIME", "AMOUNT", "RISK SCORE"};
+    string title = string("TRANSACTIONS SORTED BY ") + names[f] +
+                   (o == 1 ? " (ASCENDING)" : " (DESCENDING)");
+
+    displaySortedTable(
+        sortTransactions(history,
+                         static_cast<SortField>(f),
+                         static_cast<SortOrder>(o)),
+        title.c_str());
+}
+
+
+// ==========================================================
+// REVIEW DEQUE MENU
+// ==========================================================
+
+static void printItem(const char* label, const QueueItem& q)
+{
+    cout << label << " transaction " << q.id
+         << " | card " << q.cardNo
+         << " | amount " << q.amount
+         << " | score " << q.score
+         << " | " << q.status << '\n';
+}
+
+static void dequeMenu(TransactionDeque& reviewQueue)
+{
+    while (true)
+    {
+        cout << "\n---------- FRAUD REVIEW DEQUE ----------\n"
+             << "1. Display deque\n"
+             << "2. Review next case (delete FRONT)\n"
+             << "3. Remove newest low-priority case (delete REAR)\n"
+             << "4. Peek front and rear\n"
+             << "0. Back\n";
+
+        int c = readInt("Choice: ");
+        QueueItem q;
+
+        if (c == 0) return;
+
+        if (c == 1)
+        {
+            reviewQueue.display();
+        }
+        else if (c == 2)
+        {
+            if (reviewQueue.deleteFront(q))
+            {
+                printItem("Reviewed:", q);
+                reviewQueue.save();
+            }
+            else cout << "Review queue is empty.\n";
+        }
+        else if (c == 3)
+        {
+            if (reviewQueue.deleteRear(q))
+            {
+                printItem("Removed :", q);
+                reviewQueue.save();
+            }
+            else cout << "Review queue is empty.\n";
+        }
+        else if (c == 4)
+        {
+            if (reviewQueue.peekFront(q))
+            {
+                printItem("Front:", q);
+                reviewQueue.peekRear(q);
+                printItem("Rear :", q);
+            }
+            else cout << "Review queue is empty.\n";
+        }
+        else cout << "Invalid choice.\n";
+    }
+}
+
+
+// ==========================================================
+// LOCATION GRAPH MENU
+// ==========================================================
+
+static void printNames(const vector<string>& v)
+{
+    for (size_t i = 0; i < v.size(); i++)
+    {
+        if (i > 0) cout << " -> ";
+        cout << v[i];
+    }
+    cout << '\n';
+}
+
+static void graphMenu(const LocationGraph& graph)
+{
+    while (true)
+    {
+        cout << "\n---------- LOCATION GRAPH ----------\n"
+             << "1. Show graph (adjacency list)\n"
+             << "2. Shortest route between two cities\n"
+             << "3. Cities near a city (radius)\n"
+             << "4. BFS / DFS from a city\n"
+             << "5. Travel trail of a card\n"
+             << "0. Back\n";
+
+        int c = readInt("Choice: ");
+
+        if (c == 0) return;
+
+        if (c == 1)
+        {
+            graph.displayAdjacency();
+        }
+        else if (c == 2)
+        {
+            string a, b;
+            cout << "From city: "; cin >> a;
+            cout << "To city  : "; cin >> b;
+
+            graph.displayRoute(graph.shortestRoute(a, b));
+
+            double direct;
+            if (graph.directDistance(a, b, direct))
+                cout << "Straight-line distance: " << direct << " km\n";
+        }
+        else if (c == 3)
+        {
+            string a;
+            cout << "City: "; cin >> a;
+            int r = readInt("Radius (km): ");
+
+            if (!graph.hasCity(a))
+            {
+                cout << "Unknown city.\n";
+                continue;
+            }
+
+            auto list = graph.nearby(a, r);
+
+            if (list.empty()) cout << "No cities within " << r << " km.\n";
+
+            for (const auto& p : list)
+                cout << "  " << p.first << " - " << p.second << " km\n";
+        }
+        else if (c == 4)
+        {
+            string a;
+            cout << "Start city: "; cin >> a;
+
+            if (!graph.hasCity(a))
+            {
+                cout << "Unknown city.\n";
+                continue;
+            }
+
+            cout << "BFS: "; printNames(graph.bfs(a));
+            cout << "DFS: "; printNames(graph.dfs(a));
+        }
+        else if (c == 5)
+        {
+            int card = readInt("Card ID: ");
+
+            vector<Transaction> history;
+            loadTransactions(history);
+
+            graph.displayTrail(card, graph.cardTrail(card, history));
+        }
+        else cout << "Invalid choice.\n";
+    }
+}
+
+
+// ==========================================================
+// MAIN MENU
+// ==========================================================
+
+int main()
+{
+    loadCards();
+
+    TransactionDeque reviewQueue;
+    reviewQueue.load();
+
+    LocationGraph graph;
+
+    if (!graph.buildFromFile())
+        cout << "Warning: locations.csv missing - location graph unavailable.\n";
+
+    cout << "=========================================\n";
+    cout << "        CREDIT CARD FRAUD SYSTEM\n";
+    cout << "=========================================\n";
+
+    while (true)
+    {
+        cout << "\n============= MAIN MENU =============\n"
+             << "1. Process new transaction\n"
+             << "2. View all transactions\n"
+             << "3. Sort transactions (time / amount / risk)\n"
+             << "4. Top riskiest transactions\n"
+             << "5. Fraud review deque\n"
+             << "6. Location graph\n"
+             << "7. Add new card\n"
+             << "0. Exit\n";
+
+        int choice = readInt("Choice: ");
+
+        if (choice == 0)
+        {
+            cout << "Goodbye.\n";
+            return 0;
+        }
+
+        switch (choice)
+        {
+            case 1: processNewTransaction(reviewQueue, graph); break;
+
+            case 2:
+            {
+                vector<Transaction> history;
+                loadTransactions(history);
+                displayTransactions(history);
+                break;
+            }
+
+            case 3: sortMenu(false);            break;
+            case 4: sortMenu(true);             break;
+            case 5: dequeMenu(reviewQueue);     break;
+            case 6: graphMenu(graph);           break;
+
+            case 7:
+            {
+                int newCard = readInt("New Card ID: ");
+
+                if (addCardInteractive(newCard))
+                {
+                    Card c;
+                    if (searchCard(newCard, c))
+                    {
+                        cout << "\n========== NEW CARD ==========\n"
+                             << "Card ID      : " << c.cardNo << '\n'
+                             << "Card Holder  : " << c.name << '\n'
+                             << "Account Type : " << c.accountType << '\n'
+                             << "Status       : " << c.status << '\n'
+                             << "Points       : " << c.points << '\n';
+                    }
+                }
+                break;
+            }
+
+            default: cout << "Invalid choice.\n";
+        }
+    }
 }
